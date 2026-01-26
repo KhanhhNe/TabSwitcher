@@ -13,7 +13,8 @@
 
 FROM golang:1.25-alpine
 
-RUN apk add --no-cache curl xz nodejs npm
+RUN apk add --no-cache curl xz
+RUN curl -fsSL https://bun.com/install | bash
 
 # Install Zig
 ARG ZIG_VERSION=0.14.0
@@ -171,7 +172,7 @@ export CGO_CFLAGS="-w"
 
 # Build frontend if exists and not already built (host may have built it)
 if [ -d "frontend" ] && [ -f "frontend/package.json" ] && [ ! -d "frontend/dist" ]; then
-    (cd frontend && npm install --silent && npm run build --silent)
+    (cd frontend && bun install --silent && bun run build --silent)
 fi
 
 # Build

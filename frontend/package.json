@@ -4,10 +4,10 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build:dev": "tsc && vite build --minify false --mode development",
-    "build": "tsc && vite build --mode production",
-    "preview": "vite preview"
+    "dev": "bunx --bun vite",
+    "build:dev": "tsc && bunx --bun vite build --minify false --mode development",
+    "build": "tsc && bunx --bun vite build --mode production",
+    "preview": "bunx --bun vite preview"
   },
   "dependencies": {
     "@wailsio/runtime": "latest",
