@@ -3,7 +3,9 @@ package main
 import (
 	"embed"
 	_ "embed"
+	"fmt"
 	"log"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -19,47 +21,137 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+// String returns a human-friendly display name of the hotkey
+// such as "Hotkey[Id: 1, Alt+Ctrl+O]"
 var (
-	user32             = windows.NewLazySystemDLL("user32.dll")
-	procRegisterHotKey = user32.NewProc("RegisterHotKey")
-	procGetMessage     = user32.NewProc("GetMessage")
-
-	MOD_ALT   uint    = 0x0001
-	VK_TAB    uint    = 0x09
-	WM_HOTKEY uint32  = 0x0312
-	NULL      uintptr = 0
-
-	HK_ID_ALT_TAB int = 1
+	user32                  = windows.NewLazySystemDLL("user32.dll")
+	procSetWindowsHookExW   = user32.NewProc("SetWindowsHookExW")
+	procLowLevelKeyboard    = user32.NewProc("LowLevelKeyboardProc")
+	procCallNextHookEx      = user32.NewProc("CallNextHookEx")
+	procUnhookWindowsHookEx = user32.NewProc("UnhookWindowsHookEx")
+	procGetMessage          = user32.NewProc("GetMessageW")
+	procTranslateMessage    = user32.NewProc("TranslateMessage")
+	procDispatchMessage     = user32.NewProc("DispatchMessageW")
+	keyboardHook            HHOOK
 )
 
-type WIN_MSG struct {
-	hwnd    uintptr
-	message uint32
-	wParam  uintptr
-	lParam  uintptr
-	time    uint32
-	pt      POINT
+const (
+	WH_KEYBOARD_LL = 13
+	WH_KEYBOARD    = 2
+	WM_KEYDOWN     = 256
+	WM_SYSKEYDOWN  = 260
+	WM_KEYUP       = 257
+	WM_SYSKEYUP    = 261
+	WM_KEYFIRST    = 256
+	WM_KEYLAST     = 264
+	PM_NOREMOVE    = 0x000
+	PM_REMOVE      = 0x001
+	PM_NOYIELD     = 0x002
+	WM_LBUTTONDOWN = 513
+	WM_RBUTTONDOWN = 516
+	NULL           = 0
+)
+
+type (
+	DWORD     uint32
+	WPARAM    uintptr
+	LPARAM    uintptr
+	LRESULT   uintptr
+	HANDLE    uintptr
+	HINSTANCE HANDLE
+	HHOOK     HANDLE
+	HWND      HANDLE
+)
+
+type HOOKPROC func(int, WPARAM, LPARAM) LRESULT
+
+type KBDLLHOOKSTRUCT struct {
+	VkCode      DWORD
+	ScanCode    DWORD
+	Flags       DWORD
+	Time        DWORD
+	DwExtraInfo uintptr
 }
 
+// http://msdn.microsoft.com/en-us/library/windows/desktop/dd162805.aspx
 type POINT struct {
-	x int32
-	y int32
+	X, Y int32
 }
 
-func RegisterHotKey(hWnd uintptr, id int, fsModifiers uint, vk uint) bool {
-	ret, _, err := procRegisterHotKey.Call(hWnd, uintptr(id), uintptr(fsModifiers), uintptr(vk))
-	if err != windows.ERROR_SUCCESS {
-		log.Println("RegisterHotKey error:", err)
+// http://msdn.microsoft.com/en-us/library/windows/desktop/ms644958.aspx
+type MSG struct {
+	Hwnd    HWND
+	Message uint32
+	WParam  uintptr
+	LParam  uintptr
+	Time    uint32
+	Pt      POINT
+}
+
+func SetWindowsHookExW(idHook int, lpfn HOOKPROC, hMod HINSTANCE, dwThreadId DWORD) (HHOOK, error) {
+	ret, _, err := procSetWindowsHookExW.Call(
+		uintptr(idHook),
+		uintptr(syscall.NewCallback(lpfn)),
+		uintptr(hMod),
+		uintptr(dwThreadId),
+	)
+	if ret == 0 {
+		return 0, err
 	}
+	return HHOOK(ret), nil
+}
+
+func CallNextHookEx(hhk HHOOK, nCode int, wParam WPARAM, lParam LPARAM) LRESULT {
+	ret, _, _ := procCallNextHookEx.Call(
+		uintptr(hhk),
+		uintptr(nCode),
+		uintptr(wParam),
+		uintptr(lParam),
+	)
+	return LRESULT(ret)
+}
+
+func UnhookWindowsHookEx(hhk HHOOK) error {
+	ret, _, err := procUnhookWindowsHookEx.Call(
+		uintptr(hhk),
+	)
+	if ret != 0 {
+		return err
+	}
+	return nil
+}
+
+func GetMessage(msg *MSG, hwnd HWND, msgFilterMin uint32, msgFilterMax uint32) (int, error) {
+	ret, _, err := procGetMessage.Call(
+		uintptr(unsafe.Pointer(msg)),
+		uintptr(hwnd),
+		uintptr(msgFilterMin),
+		uintptr(msgFilterMax))
+	if int(ret) < -1 {
+		return int(ret), err
+	}
+	return int(ret), nil
+}
+
+func TranslateMessage(msg *MSG) bool {
+	ret, _, _ := procTranslateMessage.Call(
+		uintptr(unsafe.Pointer(msg)))
 	return ret != 0
 }
 
-func GetMessage(msg *WIN_MSG, hWnd uintptr, wMsgFilterMin uint32, wMsgFilterMax uint32) bool {
-	ret, _, err := procGetMessage.Call(uintptr(unsafe.Pointer(msg)), hWnd, uintptr(wMsgFilterMin), uintptr(wMsgFilterMax))
-	if err != windows.ERROR_SUCCESS {
-		log.Println("GetMessage error:", err)
-	}
-	return ret != 0
+func DispatchMessage(msg *MSG) uintptr {
+	ret, _, _ := procDispatchMessage.Call(
+		uintptr(unsafe.Pointer(msg)))
+	return ret
+}
+
+func LowLevelKeyboardProc(nCode int, wParam WPARAM, lParam LPARAM) LRESULT {
+	ret, _, _ := procLowLevelKeyboard.Call(
+		uintptr(nCode),
+		uintptr(wParam),
+		uintptr(lParam),
+	)
+	return LRESULT(ret)
 }
 
 func init() {
@@ -98,7 +190,7 @@ func main() {
 	// 'Mac' options tailor the window when running on macOS.
 	// 'BackgroundColour' is the background colour of the window.
 	// 'URL' is the URL that will be loaded into the webview.
-	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
+	app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title: "Window 1",
 		Mac: application.MacWindow{
 			InvisibleTitleBarHeight: 50,
@@ -119,29 +211,47 @@ func main() {
 		}
 	}()
 
-	hwnd := window.NativeWindow()
-	log.Println("Window handle:", hwnd)
-	if RegisterHotKey(uintptr(hwnd), HK_ID_ALT_TAB, MOD_ALT, VK_TAB) {
-		log.Println("Successfully registered ALT+TAB hotkey")
-	} else {
-		log.Println("Failed to register ALT+TAB hotkey")
+	hook, err := SetWindowsHookExW(
+		WH_KEYBOARD_LL,
+		func(nCode int, wParam WPARAM, lParam LPARAM) LRESULT {
+			if nCode == 0 && wParam == WM_SYSKEYDOWN {
+				fmt.Print("key pressed:")
+				kbdstruct := (*KBDLLHOOKSTRUCT)(unsafe.Pointer(lParam))
+				code := byte(kbdstruct.VkCode)
+				if code == windows.VK_TAB {
+					fmt.Printf("(tab)")
+				}
+				if code == windows.VK_OEM_3 {
+					fmt.Printf("(`~)")
+				}
+				fmt.Printf("%q\n", code)
+			}
+			return CallNextHookEx(keyboardHook, nCode, wParam, lParam)
+		},
+		0,
+		0,
+	)
+	if err != nil {
+		log.Fatal("Failed to set keyboard hook:", err)
 	}
 
 	go func() {
-		msg := WIN_MSG{}
+		msg := &MSG{}
 		for {
-			if GetMessage(&msg, NULL, WM_HOTKEY, WM_HOTKEY) {
-				if msg.message == WM_HOTKEY {
-					if int(msg.wParam) == HK_ID_ALT_TAB {
-						log.Println("ALT+TAB hotkey pressed")
-					}
-				}
+			if _, err := GetMessage(msg, 0, 0, 0); err != nil {
+				break
 			}
+
+			TranslateMessage(msg)
+			DispatchMessage(msg)
 		}
+
+		UnhookWindowsHookEx(hook)
+		hook = 0
 	}()
 
 	// Run the application. This blocks until the application has been exited.
-	err := app.Run()
+	err = app.Run()
 
 	// If an error occurred while running the application, log it and exit.
 	if err != nil {
