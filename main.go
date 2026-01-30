@@ -32,7 +32,9 @@ var (
 	procGetMessage          = user32.NewProc("GetMessageW")
 	procTranslateMessage    = user32.NewProc("TranslateMessage")
 	procDispatchMessage     = user32.NewProc("DispatchMessageW")
-	keyboardHook            HHOOK
+	procEnumWindows         = user32.NewProc("EnumWindows")
+
+	keyboardHook HHOOK
 )
 
 const (
@@ -64,6 +66,7 @@ type (
 )
 
 type HOOKPROC func(int, WPARAM, LPARAM) LRESULT
+type WNDENUMPROC func(HWND, LPARAM) bool
 
 type KBDLLHOOKSTRUCT struct {
 	VkCode      DWORD
@@ -154,6 +157,17 @@ func LowLevelKeyboardProc(nCode int, wParam WPARAM, lParam LPARAM) LRESULT {
 	return LRESULT(ret)
 }
 
+func EnumWindows(enumFunc WNDENUMPROC, lParam LPARAM) error {
+	ret, _, err := procEnumWindows.Call(
+		syscall.NewCallback(enumFunc),
+		uintptr(lParam),
+	)
+	if ret == 0 {
+		return err
+	}
+	return nil
+}
+
 func init() {
 	// Register a custom event whose associated data type is string.
 	// This is not required, but the binding generator will pick up registered events
@@ -213,7 +227,8 @@ func main() {
 
 	hook, err := SetWindowsHookExW(
 		WH_KEYBOARD_LL,
-		func(nCode int, wParam WPARAM, lParam LPARAM) LRESULT {
+		(HOOKPROC)(func(nCode int, wParam WPARAM, lParam LPARAM) LRESULT {
+			// SYSKEYDOWN is for Alt+Key combinations & F10
 			if nCode == 0 && wParam == WM_SYSKEYDOWN {
 				fmt.Print("key pressed:")
 				kbdstruct := (*KBDLLHOOKSTRUCT)(unsafe.Pointer(lParam))
@@ -227,13 +242,20 @@ func main() {
 				fmt.Printf("%q\n", code)
 			}
 			return CallNextHookEx(keyboardHook, nCode, wParam, lParam)
-		},
+		}),
 		0,
 		0,
 	)
 	if err != nil {
 		log.Fatal("Failed to set keyboard hook:", err)
 	}
+
+	err = EnumWindows(
+		(WNDENUMPROC)(func(hWnd HWND, lParam LPARAM) bool {
+			return true
+		}),
+		LPARAM(0),
+	)
 
 	go func() {
 		msg := &MSG{}
