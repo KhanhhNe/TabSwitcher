@@ -1,11 +1,12 @@
 package main
 
 import (
+	"changeme/win32"
 	"embed"
 	_ "embed"
 	"fmt"
 	"log"
-	"syscall"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -21,152 +22,13 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
-// String returns a human-friendly display name of the hotkey
-// such as "Hotkey[Id: 1, Alt+Ctrl+O]"
-var (
-	user32                  = windows.NewLazySystemDLL("user32.dll")
-	procSetWindowsHookExW   = user32.NewProc("SetWindowsHookExW")
-	procLowLevelKeyboard    = user32.NewProc("LowLevelKeyboardProc")
-	procCallNextHookEx      = user32.NewProc("CallNextHookEx")
-	procUnhookWindowsHookEx = user32.NewProc("UnhookWindowsHookEx")
-	procGetMessage          = user32.NewProc("GetMessageW")
-	procTranslateMessage    = user32.NewProc("TranslateMessage")
-	procDispatchMessage     = user32.NewProc("DispatchMessageW")
-	procEnumWindows         = user32.NewProc("EnumWindows")
-
-	keyboardHook HHOOK
-)
-
-const (
-	WH_KEYBOARD_LL = 13
-	WH_KEYBOARD    = 2
-	WM_KEYDOWN     = 256
-	WM_SYSKEYDOWN  = 260
-	WM_KEYUP       = 257
-	WM_SYSKEYUP    = 261
-	WM_KEYFIRST    = 256
-	WM_KEYLAST     = 264
-	PM_NOREMOVE    = 0x000
-	PM_REMOVE      = 0x001
-	PM_NOYIELD     = 0x002
-	WM_LBUTTONDOWN = 513
-	WM_RBUTTONDOWN = 516
-	NULL           = 0
-)
-
-type (
-	DWORD     uint32
-	WPARAM    uintptr
-	LPARAM    uintptr
-	LRESULT   uintptr
-	HANDLE    uintptr
-	HINSTANCE HANDLE
-	HHOOK     HANDLE
-	HWND      HANDLE
-)
-
-type HOOKPROC func(int, WPARAM, LPARAM) LRESULT
-type WNDENUMPROC func(HWND, LPARAM) bool
-
-type KBDLLHOOKSTRUCT struct {
-	VkCode      DWORD
-	ScanCode    DWORD
-	Flags       DWORD
-	Time        DWORD
-	DwExtraInfo uintptr
+type UserWindow struct {
+	hwnd     windows.HWND
+	caption  string
+	iconPath string
 }
 
-// http://msdn.microsoft.com/en-us/library/windows/desktop/dd162805.aspx
-type POINT struct {
-	X, Y int32
-}
-
-// http://msdn.microsoft.com/en-us/library/windows/desktop/ms644958.aspx
-type MSG struct {
-	Hwnd    HWND
-	Message uint32
-	WParam  uintptr
-	LParam  uintptr
-	Time    uint32
-	Pt      POINT
-}
-
-func SetWindowsHookExW(idHook int, lpfn HOOKPROC, hMod HINSTANCE, dwThreadId DWORD) (HHOOK, error) {
-	ret, _, err := procSetWindowsHookExW.Call(
-		uintptr(idHook),
-		uintptr(syscall.NewCallback(lpfn)),
-		uintptr(hMod),
-		uintptr(dwThreadId),
-	)
-	if ret == 0 {
-		return 0, err
-	}
-	return HHOOK(ret), nil
-}
-
-func CallNextHookEx(hhk HHOOK, nCode int, wParam WPARAM, lParam LPARAM) LRESULT {
-	ret, _, _ := procCallNextHookEx.Call(
-		uintptr(hhk),
-		uintptr(nCode),
-		uintptr(wParam),
-		uintptr(lParam),
-	)
-	return LRESULT(ret)
-}
-
-func UnhookWindowsHookEx(hhk HHOOK) error {
-	ret, _, err := procUnhookWindowsHookEx.Call(
-		uintptr(hhk),
-	)
-	if ret != 0 {
-		return err
-	}
-	return nil
-}
-
-func GetMessage(msg *MSG, hwnd HWND, msgFilterMin uint32, msgFilterMax uint32) (int, error) {
-	ret, _, err := procGetMessage.Call(
-		uintptr(unsafe.Pointer(msg)),
-		uintptr(hwnd),
-		uintptr(msgFilterMin),
-		uintptr(msgFilterMax))
-	if int(ret) < -1 {
-		return int(ret), err
-	}
-	return int(ret), nil
-}
-
-func TranslateMessage(msg *MSG) bool {
-	ret, _, _ := procTranslateMessage.Call(
-		uintptr(unsafe.Pointer(msg)))
-	return ret != 0
-}
-
-func DispatchMessage(msg *MSG) uintptr {
-	ret, _, _ := procDispatchMessage.Call(
-		uintptr(unsafe.Pointer(msg)))
-	return ret
-}
-
-func LowLevelKeyboardProc(nCode int, wParam WPARAM, lParam LPARAM) LRESULT {
-	ret, _, _ := procLowLevelKeyboard.Call(
-		uintptr(nCode),
-		uintptr(wParam),
-		uintptr(lParam),
-	)
-	return LRESULT(ret)
-}
-
-func EnumWindows(enumFunc WNDENUMPROC, lParam LPARAM) error {
-	ret, _, err := procEnumWindows.Call(
-		syscall.NewCallback(enumFunc),
-		uintptr(lParam),
-	)
-	if ret == 0 {
-		return err
-	}
-	return nil
-}
+var userWindows sync.Map
 
 func init() {
 	// Register a custom event whose associated data type is string.
@@ -214,6 +76,7 @@ func main() {
 		BackgroundColour: application.NewRGB(27, 38, 54),
 		URL:              "/",
 	})
+	log.Println("Application set up finished.")
 
 	// Create a goroutine that emits an event containing the current time every second.
 	// The frontend can listen to this event and update the UI accordingly.
@@ -225,13 +88,13 @@ func main() {
 		}
 	}()
 
-	hook, err := SetWindowsHookExW(
-		WH_KEYBOARD_LL,
-		(HOOKPROC)(func(nCode int, wParam WPARAM, lParam LPARAM) LRESULT {
+	hook, err := win32.SetWindowsHookExW(
+		win32.WH_KEYBOARD_LL,
+		(win32.HOOKPROC)(func(nCode int, wParam win32.WPARAM, lParam win32.LPARAM) win32.LRESULT {
 			// SYSKEYDOWN is for Alt+Key combinations & F10
-			if nCode == 0 && wParam == WM_SYSKEYDOWN {
+			if nCode == 0 && wParam == win32.WM_SYSKEYDOWN {
 				fmt.Print("key pressed:")
-				kbdstruct := (*KBDLLHOOKSTRUCT)(unsafe.Pointer(lParam))
+				kbdstruct := (*win32.KBDLLHOOKSTRUCT)(unsafe.Pointer(lParam))
 				code := byte(kbdstruct.VkCode)
 				if code == windows.VK_TAB {
 					fmt.Printf("(tab)")
@@ -241,7 +104,7 @@ func main() {
 				}
 				fmt.Printf("%q\n", code)
 			}
-			return CallNextHookEx(keyboardHook, nCode, wParam, lParam)
+			return win32.CallNextHookEx(win32.HHOOK(0), nCode, wParam, lParam)
 		}),
 		0,
 		0,
@@ -249,30 +112,56 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to set keyboard hook:", err)
 	}
-
-	err = EnumWindows(
-		(WNDENUMPROC)(func(hWnd HWND, lParam LPARAM) bool {
-			return true
-		}),
-		LPARAM(0),
-	)
+	log.Println("Keyboard hook installed")
 
 	go func() {
-		msg := &MSG{}
+		err := win32.EnumDesktopWindows(
+			win32.HDESK(0),
+			(win32.WNDENUMPROC)(func(hWnd windows.HWND, lParam win32.LPARAM) uintptr {
+				if win32.IsAltTabWindow(hWnd) {
+					caption := make([]uint16, 256)
+					_, err := win32.GetWindowTextW(hWnd, &caption[0], int32(len(caption)))
+					if err != nil {
+						return uintptr(1)
+					}
+					capStr := windows.UTF16ToString(caption)
+
+					userWindows.Store(hWnd, UserWindow{hwnd: hWnd, caption: capStr})
+				}
+				return uintptr(1)
+			}),
+			win32.LPARAM(0),
+		)
+		if err != nil {
+			log.Fatalf("Failed to enumerate windows: %v", err)
+		}
+
+		userWindows.Range(func(key, value any) bool {
+			hwnd := key.(windows.HWND)
+			userWindow := value.(UserWindow)
+
+			fmt.Println("Window Handle:", hwnd, "UserWindow Struct:", userWindow)
+			return true
+		})
+	}()
+
+	go func() {
+		msg := &win32.MSG{}
 		for {
-			if _, err := GetMessage(msg, 0, 0, 0); err != nil {
+			if _, err := win32.GetMessage(msg, 0, 0, 0); err != nil {
 				break
 			}
 
-			TranslateMessage(msg)
-			DispatchMessage(msg)
+			win32.TranslateMessage(msg)
+			win32.DispatchMessage(msg)
 		}
 
-		UnhookWindowsHookEx(hook)
+		win32.UnhookWindowsHookEx(hook)
 		hook = 0
 	}()
 
 	// Run the application. This blocks until the application has been exited.
+	log.Println("Running the application...")
 	err = app.Run()
 
 	// If an error occurred while running the application, log it and exit.
