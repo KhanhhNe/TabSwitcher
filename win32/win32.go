@@ -1,37 +1,58 @@
 package win32
 
 import (
+	"bytes"
+	"encoding/base64"
+	"fmt"
+	"image"
+	"image/png"
+	"os"
 	"slices"
 	"syscall"
 	"unsafe"
 
+	"github.com/go-ole/go-ole"
+	"github.com/shahfarhadreza/go-gdiplus"
 	"golang.org/x/sys/windows"
 )
 
 var (
-	user32                  = windows.NewLazySystemDLL("user32.dll")
-	procSetWindowsHookExW   = user32.NewProc("SetWindowsHookExW")
-	procLowLevelKeyboard    = user32.NewProc("LowLevelKeyboardProc")
-	procCallNextHookEx      = user32.NewProc("CallNextHookEx")
-	procUnhookWindowsHookEx = user32.NewProc("UnhookWindowsHookEx")
-	procGetMessage          = user32.NewProc("GetMessageW")
-	procTranslateMessage    = user32.NewProc("TranslateMessage")
-	procDispatchMessage     = user32.NewProc("DispatchMessageW")
-	procEnumWindows         = user32.NewProc("EnumWindows")
-	procEnumDesktopWindows  = user32.NewProc("EnumDesktopWindows")
-	procGetWindowInfo       = user32.NewProc("GetWindowInfo")
-	procIsWindowVisible     = user32.NewProc("IsWindowVisible")
-	procIsIconic            = user32.NewProc("IsIconic")
-	procGetWindowTextW      = user32.NewProc("GetWindowTextW")
-	procGetShellWindow      = user32.NewProc("GetShellWindow")
-	procGetAncestor         = user32.NewProc("GetAncestor")
-	procGetLastActivePopup  = user32.NewProc("GetLastActivePopup")
-	procGetClassNameW       = user32.NewProc("GetClassNameW")
-	procGetWindowRect       = user32.NewProc("GetWindowRect")
-	procGetWindowLongPtrW   = user32.NewProc("GetWindowLongPtrW")
+	user32                   = windows.NewLazySystemDLL("user32.dll")
+	procSetWindowsHookExW    = user32.NewProc("SetWindowsHookExW")
+	procLowLevelKeyboard     = user32.NewProc("LowLevelKeyboardProc")
+	procCallNextHookEx       = user32.NewProc("CallNextHookEx")
+	procUnhookWindowsHookEx  = user32.NewProc("UnhookWindowsHookEx")
+	procGetMessage           = user32.NewProc("GetMessageW")
+	procTranslateMessage     = user32.NewProc("TranslateMessage")
+	procDispatchMessage      = user32.NewProc("DispatchMessageW")
+	procEnumWindows          = user32.NewProc("EnumWindows")
+	procEnumDesktopWindows   = user32.NewProc("EnumDesktopWindows")
+	procGetWindowInfo        = user32.NewProc("GetWindowInfo")
+	procIsWindowVisible      = user32.NewProc("IsWindowVisible")
+	procIsIconic             = user32.NewProc("IsIconic")
+	procGetWindowTextW       = user32.NewProc("GetWindowTextW")
+	procGetShellWindow       = user32.NewProc("GetShellWindow")
+	procGetAncestor          = user32.NewProc("GetAncestor")
+	procGetLastActivePopup   = user32.NewProc("GetLastActivePopup")
+	procGetClassNameW        = user32.NewProc("GetClassNameW")
+	procGetWindowRect        = user32.NewProc("GetWindowRect")
+	procGetWindowLongPtrW    = user32.NewProc("GetWindowLongPtrW")
+	procGetClassLongPtrW     = user32.NewProc("GetClassLongPtrW")
+	procSendMessageW         = user32.NewProc("SendMessageW")
+	procSendMessageCallbackW = user32.NewProc("SendMessageCallbackW")
+	procLoadIconW            = user32.NewProc("LoadIconW")
+	procGetIconInfoExW       = user32.NewProc("GetIconInfoExW")
+	procGetForegroundWindow  = user32.NewProc("GetForegroundWindow")
 
-	dwmapi                     = windows.NewLazySystemDLL("dwmapi.dll")
-	procDwmGetWindowAttribute  = dwmapi.NewProc("DwmGetWindowAttribute")
+	dwmapi                    = windows.NewLazySystemDLL("dwmapi.dll")
+	procDwmGetWindowAttribute = dwmapi.NewProc("DwmGetWindowAttribute")
+
+	gdi32            = windows.NewLazySystemDLL("gdi32.dll")
+	procDeleteObject = gdi32.NewProc("DeleteObject")
+
+	gdiplusDLL                   = windows.NewLazySystemDLL("gdiplus.dll")
+	procGdipGetImageEncodersSize = gdiplusDLL.NewProc("GdipGetImageEncodersSize")
+	procGdipGetImageEncoders     = gdiplusDLL.NewProc("GdipGetImageEncoders")
 )
 
 const (
@@ -46,6 +67,15 @@ const (
 	WM_KEYLAST     = 264
 	WM_LBUTTONDOWN = 513
 	WM_RBUTTONDOWN = 516
+	WM_GETICON     = 0x007F
+
+	// Icon types for WM_GETICON
+	ICON_SMALL  = 0
+	ICON_BIG    = 1
+	ICON_SMALL2 = 2
+
+	// Standard icon IDs
+	IDI_APPLICATION = 32512
 
 	WS_OVERLAPPED       = 0x00000000
 	WS_CAPTION          = 0x00C00000
@@ -71,6 +101,9 @@ const (
 	// GetWindowLong indices
 	GWL_EXSTYLE = -20
 
+	// GetClassLong indices
+	GCL_HICON = -14
+
 	// DWM window attributes
 	DWMWA_CLOAKED = 14
 
@@ -81,6 +114,9 @@ const (
 
 	// MaxLastActivePopupIterations limits iterations when finding last active popup
 	MaxLastActivePopupIterations = 50
+
+	// MAX_PATH is the maximum path length in Windows
+	MAX_PATH = 260
 
 	NULL = 0
 )
@@ -94,11 +130,16 @@ type (
 	HINSTANCE HANDLE
 	HHOOK     HANDLE
 	HDESK     HANDLE
+	HICON     HANDLE
+	HBITMAP   HANDLE
+	HGDIOBJ   HANDLE
 	WORD      uint16
+	BOOL      int32
 )
 
 type HOOKPROC func(int, WPARAM, LPARAM) LRESULT
 type WNDENUMPROC func(windows.HWND, LPARAM) uintptr
+type SENDASYNCPROC func(windows.HWND, uint32, uintptr, LRESULT) uintptr
 
 type RECT struct {
 	Left   int32
@@ -141,6 +182,45 @@ type MSG struct {
 	LParam  uintptr
 	Time    uint32
 	Pt      POINT
+}
+
+// ICONINFO contains information about an icon or a cursor
+type ICONINFO struct {
+	FIcon    BOOL
+	XHotspot DWORD
+	YHotspot DWORD
+	HbmMask  HBITMAP
+	HbmColor HBITMAP
+}
+
+// ICONINFOEXW contains extended information about an icon or a cursor
+type ICONINFOEXW struct {
+	CbSize    DWORD
+	FIcon     BOOL
+	XHotspot  DWORD
+	YHotspot  DWORD
+	HbmMask   HBITMAP
+	HbmColor  HBITMAP
+	WResID    WORD
+	SzModName [MAX_PATH]uint16
+	SzResName [MAX_PATH]uint16
+}
+
+// ImageCodecInfo contains information about an image encoder/decoder
+type ImageCodecInfo struct {
+	Clsid             windows.GUID
+	FormatID          windows.GUID
+	CodecName         *uint16
+	DllName           *uint16
+	FormatDescription *uint16
+	FilenameExtension *uint16
+	MimeType          *uint16
+	Flags             DWORD
+	Version           DWORD
+	SigCount          DWORD
+	SigSize           DWORD
+	SigPattern        *byte
+	SigMask           *byte
 }
 
 func SetWindowsHookExW(idHook int, lpfn HOOKPROC, hMod HINSTANCE, dwThreadId DWORD) (HHOOK, error) {
@@ -320,6 +400,69 @@ func GetWindowLongPtrW(hwnd windows.HWND, nIndex int32) uintptr {
 	return ret
 }
 
+func GetClassLongPtrW(hwnd windows.HWND, nIndex int32) (uintptr, error) {
+	ret, _, err := procGetClassLongPtrW.Call(
+		uintptr(hwnd),
+		uintptr(nIndex),
+	)
+	if ret == 0 {
+		return 0, err
+	}
+	return ret, nil
+}
+
+func SendMessage(hwnd windows.HWND, msg uint32, wParam WPARAM, lParam LPARAM) LRESULT {
+	ret, _, _ := procSendMessageW.Call(
+		uintptr(hwnd),
+		uintptr(msg),
+		uintptr(wParam),
+		uintptr(lParam),
+	)
+	return LRESULT(ret)
+}
+
+func SendMessageCallbackW(hwnd windows.HWND, msg uint32, wParam WPARAM, lParam LPARAM, lpResultCallBack SENDASYNCPROC, dwData uintptr) error {
+	ret, _, err := procSendMessageCallbackW.Call(
+		uintptr(hwnd),
+		uintptr(msg),
+		uintptr(wParam),
+		uintptr(lParam),
+		syscall.NewCallback(lpResultCallBack),
+		dwData,
+	)
+	if ret == 0 {
+		return err
+	}
+	return nil
+}
+
+func LoadIconW(hInstance HINSTANCE, lpIconName uintptr) HICON {
+	ret, _, _ := procLoadIconW.Call(
+		uintptr(hInstance),
+		lpIconName,
+	)
+	return HICON(ret)
+}
+
+func GetIconInfoExW(hIcon HICON, piconinfo *ICONINFOEXW) error {
+	// Set the size before calling
+	piconinfo.CbSize = DWORD(unsafe.Sizeof(*piconinfo))
+
+	ret, _, err := procGetIconInfoExW.Call(
+		uintptr(hIcon),
+		uintptr(unsafe.Pointer(piconinfo)),
+	)
+	if ret == 0 {
+		return err
+	}
+	return nil
+}
+
+// MAKEINTRESOURCEW converts an integer resource ID to a resource pointer
+func MAKEINTRESOURCEW(id uintptr) uintptr {
+	return id & 0xFFFF
+}
+
 func DwmGetWindowAttribute(hwnd windows.HWND, dwAttribute uint32, pvAttribute unsafe.Pointer, cbAttribute uint32) error {
 	ret, _, _ := procDwmGetWindowAttribute.Call(
 		uintptr(hwnd),
@@ -331,6 +474,11 @@ func DwmGetWindowAttribute(hwnd windows.HWND, dwAttribute uint32, pvAttribute un
 		return syscall.Errno(ret)
 	}
 	return nil
+}
+
+func DeleteObject(hObject HGDIOBJ) bool {
+	ret, _, _ := procDeleteObject.Call(uintptr(hObject))
+	return ret != 0
 }
 
 // WindowsClassNamesToSkip defines window classes that should not be activated
@@ -414,7 +562,12 @@ func IsAltTabWindow(hwnd windows.HWND) bool {
 
 	// The window must not be cloaked by the shell
 	var cloaked uint32
-	err := DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, unsafe.Pointer(&cloaked), uint32(unsafe.Sizeof(cloaked)))
+	err := DwmGetWindowAttribute(
+		hwnd,
+		DWMWA_CLOAKED,
+		unsafe.Pointer(&cloaked),
+		uint32(unsafe.Sizeof(cloaked)),
+	)
 	if err == nil && cloaked == DWM_CLOAKED_SHELL {
 		return false
 	}
@@ -426,4 +579,167 @@ func IsAltTabWindow(hwnd windows.HWND) bool {
 	}
 
 	return true
+}
+
+func GetWindowIcon(hwnd windows.HWND) HICON {
+	// Try WM_GETICON first
+	icon := SendMessage(
+		hwnd,
+		WM_GETICON,
+		ICON_BIG,
+		0,
+	)
+	if icon != 0 {
+		fmt.Println("WM_GETICON", hwnd)
+		return HICON(icon)
+	}
+
+	// Try getting icon from window class
+	ret, _ := GetClassLongPtrW(hwnd, GCL_HICON)
+	if ret != 0 {
+		fmt.Println("GetClassLongPtrW", hwnd)
+		return HICON(ret)
+	}
+
+	// Fall back to default application icon
+	fmt.Println("Default", hwnd)
+	return LoadIconW(0, MAKEINTRESOURCEW(IDI_APPLICATION))
+}
+
+func GetForegroundWindow() windows.HWND {
+	ret, _, _ := procGetForegroundWindow.Call()
+	return windows.HWND(ret)
+}
+
+// GetEncoderClsid finds the CLSID of an image encoder by MIME type
+// mimeType examples: "image/png", "image/jpeg", "image/bmp", "image/gif"
+// Returns the CLSID and an error if the encoder is not found
+func GetEncoderClsid(mimeType string) (*windows.GUID, error) {
+	var num, size uint32
+
+	// Get the number of encoders and size of array
+	ret, _, _ := procGdipGetImageEncodersSize.Call(
+		uintptr(unsafe.Pointer(&num)),
+		uintptr(unsafe.Pointer(&size)),
+	)
+	if ret != 0 { // GDI+ returns 0 for Ok
+		return nil, syscall.Errno(ret)
+	}
+
+	if size == 0 {
+		return nil, syscall.EINVAL
+	}
+
+	// Allocate memory for the encoder array
+	buffer := make([]byte, size)
+	pImageCodecInfo := (*ImageCodecInfo)(unsafe.Pointer(&buffer[0]))
+
+	// Get all encoder information
+	ret, _, _ = procGdipGetImageEncoders.Call(
+		uintptr(num),
+		uintptr(size),
+		uintptr(unsafe.Pointer(pImageCodecInfo)),
+	)
+	if ret != 0 {
+		return nil, syscall.Errno(ret)
+	}
+
+	// Iterate through encoders to find matching MIME type
+	encoders := unsafe.Slice(pImageCodecInfo, num)
+	for i := uint32(0); i < num; i++ {
+		// Compare MIME types
+		if windows.UTF16PtrToString(encoders[i].MimeType) == mimeType {
+			return &encoders[i].Clsid, nil
+		}
+	}
+
+	return nil, syscall.ENOENT
+}
+
+func BitmapToPngFile(hBitmap HBITMAP, pngClsId *windows.GUID) ([]byte, error) {
+	bitmap := &gdiplus.GpBitmap{}
+	ret := gdiplus.GdipCreateBitmapFromHBITMAP(
+		gdiplus.HBITMAP(hBitmap),
+		gdiplus.HPALETTE(0),
+		&bitmap,
+	)
+	if ret != gdiplus.Ok {
+		return nil, fmt.Errorf("Bitmap convert error: %s", ret.String())
+	}
+
+	file, err := os.CreateTemp("", "tabswitcher.*.png")
+	if err != nil {
+		return nil, err
+	}
+
+	file.Close()
+	defer os.Remove(file.Name())
+
+	ret = gdiplus.GdipSaveImageToFile(
+		bitmap,
+		windows.StringToUTF16Ptr(file.Name()),
+		(*ole.GUID)(pngClsId),
+		nil,
+	)
+	if ret != gdiplus.Ok {
+		return nil, fmt.Errorf("Save image error: %s", ret.String())
+	}
+
+	iconBytes, err := os.ReadFile(file.Name())
+	if err != nil {
+		return nil, err
+	}
+
+	return iconBytes, nil
+}
+
+func HICONToBase64Png(icon HICON, pngClsId *windows.GUID) (string, error) {
+	iconInfo := ICONINFOEXW{}
+	err := GetIconInfoExW(icon, &iconInfo)
+	if err != nil {
+		return "", err
+	}
+
+	imgBytes, err := BitmapToPngFile(iconInfo.HbmColor, pngClsId)
+	if err != nil {
+		return "", err
+	}
+	DeleteObject(HGDIOBJ(iconInfo.HbmColor))
+
+	maskBytes, err := BitmapToPngFile(iconInfo.HbmMask, pngClsId)
+	if err != nil {
+		return "", err
+	}
+	DeleteObject(HGDIOBJ(iconInfo.HbmMask))
+
+	img, _, err := image.Decode(bytes.NewReader(imgBytes))
+	if err != nil {
+		return "", err
+	}
+	imgNRGBA := img.(*image.NRGBA)
+
+	mask, _, err := image.Decode(bytes.NewReader(maskBytes))
+	if err != nil {
+		return "", err
+	}
+	maskPalleted := mask.(*image.Paletted)
+
+	for y := 0; y < img.Bounds().Dy(); y++ {
+		for x := 0; x < img.Bounds().Dx(); x++ {
+			a := maskPalleted.ColorIndexAt(x, y)
+			color := imgNRGBA.NRGBAAt(x, y)
+			color.A = 255 - a*255
+
+			imgNRGBA.Set(x, y, color)
+		}
+	}
+
+	output := &bytes.Buffer{}
+	err = png.Encode(output, imgNRGBA)
+	if err != nil {
+		return "", err
+	}
+	iconB64 := base64.StdEncoding.EncodeToString(output.Bytes())
+
+	return iconB64, nil
 }

@@ -6,10 +6,12 @@ import (
 	_ "embed"
 	"fmt"
 	"log"
+	"slices"
 	"sync"
 	"time"
 	"unsafe"
 
+	"github.com/shahfarhadreza/go-gdiplus"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"golang.org/x/sys/windows"
 )
@@ -23,18 +25,111 @@ import (
 var assets embed.FS
 
 type UserWindow struct {
-	hwnd     windows.HWND
-	caption  string
-	iconPath string
+	touched      bool
+	IsForeground bool
+	Hwnd         windows.HWND
+	Caption      string
+	IconBase64   string
 }
 
 var userWindows sync.Map
+var windowsOrder []windows.HWND
+var windowsOrderMutex sync.Mutex
 
 func init() {
 	// Register a custom event whose associated data type is string.
 	// This is not required, but the binding generator will pick up registered events
 	// and provide a strongly typed JS/TS API for them.
 	application.RegisterEvent[string]("time")
+	application.RegisterEvent[[]UserWindow]("userWindowsChanged")
+}
+
+var (
+	gdipInput  = gdiplus.GdiplusStartupInput{GdiplusVersion: 1}
+	gdipOutput = gdiplus.GdiplusStartupOutput{}
+	pngClsId   = &windows.GUID{}
+)
+
+func GetAltTabWindows() []UserWindow {
+	<-time.After(2 * time.Second)
+
+	foreground := win32.GetForegroundWindow()
+
+	userWindows.Range(func(key, val any) bool {
+		window := val.(UserWindow)
+		window.touched = false
+		userWindows.Store(key, window)
+		return true
+	})
+
+	err := win32.EnumDesktopWindows(
+		win32.HDESK(0),
+		(win32.WNDENUMPROC)(func(hWnd windows.HWND, lParam win32.LPARAM) uintptr {
+			if win32.IsAltTabWindow(hWnd) {
+				caption := make([]uint16, 256)
+				_, err := win32.GetWindowTextW(hWnd, &caption[0], int32(len(caption)))
+				if err != nil {
+					return uintptr(1)
+				}
+				capStr := windows.UTF16ToString(caption)
+
+				icon := win32.GetWindowIcon(hWnd)
+				iconB64, err := win32.HICONToBase64Png(icon, pngClsId)
+				if err != nil {
+					return uintptr(1)
+				}
+
+				isForeground := foreground == hWnd
+
+				_, existed := userWindows.Load(hWnd)
+				userWindows.Store(hWnd, UserWindow{
+					touched:      true,
+					Hwnd:         hWnd,
+					Caption:      capStr,
+					IconBase64:   iconB64,
+					IsForeground: isForeground,
+				})
+
+				if !existed {
+					windowsOrderMutex.Lock()
+					windowsOrder = append(windowsOrder, hWnd)
+					windowsOrderMutex.Unlock()
+				}
+			}
+			return uintptr(1)
+		}),
+		win32.LPARAM(0),
+	)
+	if err != nil {
+		log.Fatalf("Failed to enumerate windows: %v", err)
+	}
+
+	windowsOrderMutex.Lock()
+	offset := 0
+
+	for i, hwnd := range windowsOrder {
+		i -= offset
+
+		if window, ok := userWindows.Load(hwnd); !ok || !window.(UserWindow).touched {
+			windowsOrder = slices.Delete(windowsOrder, i, i+1)
+			if ok {
+				userWindows.Delete(hwnd)
+			}
+			offset += 1
+		}
+	}
+	windowsOrderMutex.Unlock()
+
+	var userWindowsSlice []UserWindow
+	windowsOrderMutex.Lock()
+	for _, hwnd := range windowsOrder {
+		if window, ok := userWindows.Load(hwnd); ok {
+			userWindowsSlice = append(userWindowsSlice, window.(UserWindow))
+		}
+	}
+	windowsOrderMutex.Unlock()
+
+	return userWindowsSlice
 }
 
 // main function serves as the application's entry point. It initializes the application, creates a window,
@@ -78,6 +173,13 @@ func main() {
 	})
 	log.Println("Application set up finished.")
 
+	ret := gdiplus.GdiplusStartup(&gdipInput, &gdipOutput)
+	fmt.Println(ret.String())
+	defer gdiplus.GdiplusShutdown()
+
+	clsId, err := win32.GetEncoderClsid("image/png")
+	pngClsId = clsId
+
 	// Create a goroutine that emits an event containing the current time every second.
 	// The frontend can listen to this event and update the UI accordingly.
 	go func() {
@@ -115,37 +217,6 @@ func main() {
 	log.Println("Keyboard hook installed")
 
 	go func() {
-		err := win32.EnumDesktopWindows(
-			win32.HDESK(0),
-			(win32.WNDENUMPROC)(func(hWnd windows.HWND, lParam win32.LPARAM) uintptr {
-				if win32.IsAltTabWindow(hWnd) {
-					caption := make([]uint16, 256)
-					_, err := win32.GetWindowTextW(hWnd, &caption[0], int32(len(caption)))
-					if err != nil {
-						return uintptr(1)
-					}
-					capStr := windows.UTF16ToString(caption)
-
-					userWindows.Store(hWnd, UserWindow{hwnd: hWnd, caption: capStr})
-				}
-				return uintptr(1)
-			}),
-			win32.LPARAM(0),
-		)
-		if err != nil {
-			log.Fatalf("Failed to enumerate windows: %v", err)
-		}
-
-		userWindows.Range(func(key, value any) bool {
-			hwnd := key.(windows.HWND)
-			userWindow := value.(UserWindow)
-
-			fmt.Println("Window Handle:", hwnd, "UserWindow Struct:", userWindow)
-			return true
-		})
-	}()
-
-	go func() {
 		msg := &win32.MSG{}
 		for {
 			if _, err := win32.GetMessage(msg, 0, 0, 0); err != nil {
@@ -158,6 +229,13 @@ func main() {
 
 		win32.UnhookWindowsHookEx(hook)
 		hook = 0
+	}()
+
+	go func() {
+		for {
+			app.Event.Emit("userWindowsChanged", GetAltTabWindows())
+			<-time.After(time.Second)
+		}
 	}()
 
 	// Run the application. This blocks until the application has been exited.

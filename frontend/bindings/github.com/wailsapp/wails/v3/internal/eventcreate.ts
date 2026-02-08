@@ -6,9 +6,18 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as main$0 from "../../../../../changeme/models.js";
+
 function configure() {
     Object.freeze(Object.assign($Create.Events, {
+        "userWindowsChanged": $$createType1,
     }));
 }
+
+// Private type creation functions
+const $$createType0 = main$0.UserWindow.createFrom;
+const $$createType1 = $Create.Array($$createType0);
 
 configure();

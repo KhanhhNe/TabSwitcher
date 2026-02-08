@@ -3,6 +3,8 @@ module changeme
 go 1.25
 
 require (
+	github.com/go-ole/go-ole v1.3.0
+	github.com/shahfarhadreza/go-gdiplus v0.0.0-20210421180137-228a132a1edf
 	github.com/wailsapp/wails/v3 v3.0.0-alpha.62
 	golang.org/x/sys v0.33.0
 )
@@ -20,7 +22,6 @@ require (
 	github.com/go-git/gcfg v1.5.1-0.20230307220236-3a3c6141e376 // indirect
 	github.com/go-git/go-billy/v5 v5.6.2 // indirect
 	github.com/go-git/go-git/v5 v5.13.2 // indirect
-	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/google/uuid v1.6.0 // indirect

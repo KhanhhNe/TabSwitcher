@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Events, WML } from "@wailsio/runtime";
-import { GreetService } from "../bindings/changeme";
+import { GreetService, UserWindow } from "../bindings/changeme";
 
 function App() {
   const [name, setName] = useState<string>("");
@@ -8,6 +8,7 @@ function App() {
     "Please enter your name below 👇",
   );
   const [time, setTime] = useState<string>("Listening for Time event...");
+  const [windows, setWindows] = useState<UserWindow[]>([]);
 
   const doGreet = () => {
     let localName = name;
@@ -27,12 +28,15 @@ function App() {
     Events.On("time", (timeValue: any) => {
       setTime(timeValue.data);
     });
+    Events.On("userWindowsChanged", (event) => {
+      setWindows(event.data)
+    })
     // Reload WML so it picks up the wml tags
     WML.Reload();
   }, []);
 
   return (
-    <div className="container">
+    <div className="container" style={{backgroundColor: 'pink'}}>
       <div>
         <a data-wml-openURL="https://wails.io">
           <img src="/wails.png" className="logo" alt="Wails logo" />
@@ -41,6 +45,13 @@ function App() {
           <img src="/react.svg" className="logo react" alt="React logo" />
         </a>
       </div>
+      {windows.map((window) => (
+        <div key={window.Hwnd}>
+          <img src={`data:image/png;base64,${window.IconBase64}`} alt="icon" width={50} height={50} />
+          <div>{window.Hwnd}</div>
+          <div>{window.Caption}</div>
+        </div>
+      ))}
       <h1>Wails + React</h1>
       <div className="result">{result}</div>
       <div className="card">
