@@ -6,13 +6,10 @@ import (
 	"fmt"
 	"image"
 	"image/png"
-	"os"
 	"slices"
 	"syscall"
 	"unsafe"
 
-	"github.com/go-ole/go-ole"
-	"github.com/shahfarhadreza/go-gdiplus"
 	"golang.org/x/sys/windows"
 )
 
@@ -41,6 +38,7 @@ var (
 	procSendMessageW         = user32.NewProc("SendMessageW")
 	procSendMessageCallbackW = user32.NewProc("SendMessageCallbackW")
 	procLoadIconW            = user32.NewProc("LoadIconW")
+	procGetIconInfo          = user32.NewProc("GetIconInfo")
 	procGetIconInfoExW       = user32.NewProc("GetIconInfoExW")
 	procGetForegroundWindow  = user32.NewProc("GetForegroundWindow")
 
@@ -49,6 +47,10 @@ var (
 
 	gdi32            = windows.NewLazySystemDLL("gdi32.dll")
 	procDeleteObject = gdi32.NewProc("DeleteObject")
+	procGetObjectW   = gdi32.NewProc("GetObjectW")
+	procGetDC        = user32.NewProc("GetDC")
+	procReleaseDC    = user32.NewProc("ReleaseDC")
+	procGetDIBits    = gdi32.NewProc("GetDIBits")
 
 	gdiplusDLL                   = windows.NewLazySystemDLL("gdiplus.dll")
 	procGdipGetImageEncodersSize = gdiplusDLL.NewProc("GdipGetImageEncodersSize")
@@ -118,6 +120,12 @@ const (
 	// MAX_PATH is the maximum path length in Windows
 	MAX_PATH = 260
 
+	// Bitmap compression types
+	BI_RGB = 0
+
+	// DIB color table identifiers
+	DIB_RGB_COLORS = 0
+
 	NULL = 0
 )
 
@@ -133,8 +141,10 @@ type (
 	HICON     HANDLE
 	HBITMAP   HANDLE
 	HGDIOBJ   HANDLE
+	HDC       HANDLE
 	WORD      uint16
 	BOOL      int32
+	LONG      int32
 )
 
 type HOOKPROC func(int, WPARAM, LPARAM) LRESULT
@@ -182,6 +192,32 @@ type MSG struct {
 	LParam  uintptr
 	Time    uint32
 	Pt      POINT
+}
+
+// BITMAP contains information about a bitmap
+type BITMAP struct {
+	BmType       LONG
+	BmWidth      LONG
+	BmHeight     LONG
+	BmWidthBytes LONG
+	BmPlanes     WORD
+	BmBitsPixel  WORD
+	BmBits       uintptr
+}
+
+// BITMAPINFOHEADER contains information about the dimensions and color format of a DIB
+type BITMAPINFOHEADER struct {
+	BiSize          DWORD
+	BiWidth         LONG
+	BiHeight        LONG
+	BiPlanes        WORD
+	BiBitCount      WORD
+	BiCompression   DWORD
+	BiSizeImage     DWORD
+	BiXPelsPerMeter LONG
+	BiYPelsPerMeter LONG
+	BiClrUsed       DWORD
+	BiClrImportant  DWORD
 }
 
 // ICONINFO contains information about an icon or a cursor
@@ -444,6 +480,17 @@ func LoadIconW(hInstance HINSTANCE, lpIconName uintptr) HICON {
 	return HICON(ret)
 }
 
+func GetIconInfo(hIcon HICON, piconinfo *ICONINFO) error {
+	ret, _, err := procGetIconInfo.Call(
+		uintptr(hIcon),
+		uintptr(unsafe.Pointer(piconinfo)),
+	)
+	if ret == 0 {
+		return err
+	}
+	return nil
+}
+
 func GetIconInfoExW(hIcon HICON, piconinfo *ICONINFOEXW) error {
 	// Set the size before calling
 	piconinfo.CbSize = DWORD(unsafe.Sizeof(*piconinfo))
@@ -479,6 +526,41 @@ func DwmGetWindowAttribute(hwnd windows.HWND, dwAttribute uint32, pvAttribute un
 func DeleteObject(hObject HGDIOBJ) bool {
 	ret, _, _ := procDeleteObject.Call(uintptr(hObject))
 	return ret != 0
+}
+
+func GetObjectW(hObject HGDIOBJ, cbBuffer int32, lpvObject unsafe.Pointer) int32 {
+	ret, _, _ := procGetObjectW.Call(
+		uintptr(hObject),
+		uintptr(cbBuffer),
+		uintptr(lpvObject),
+	)
+	return int32(ret)
+}
+
+func GetDC(hwnd windows.HWND) HDC {
+	ret, _, _ := procGetDC.Call(uintptr(hwnd))
+	return HDC(ret)
+}
+
+func ReleaseDC(hwnd windows.HWND, hdc HDC) int32 {
+	ret, _, _ := procReleaseDC.Call(
+		uintptr(hwnd),
+		uintptr(hdc),
+	)
+	return int32(ret)
+}
+
+func GetDIBits(hdc HDC, hbmp HBITMAP, uStartScan uint32, cScanLines uint32, lpvBits unsafe.Pointer, lpbi *BITMAPINFOHEADER, uUsage uint32) int32 {
+	ret, _, _ := procGetDIBits.Call(
+		uintptr(hdc),
+		uintptr(hbmp),
+		uintptr(uStartScan),
+		uintptr(cScanLines),
+		uintptr(lpvBits),
+		uintptr(unsafe.Pointer(lpbi)),
+		uintptr(uUsage),
+	)
+	return int32(ret)
 }
 
 // WindowsClassNamesToSkip defines window classes that should not be activated
@@ -656,90 +738,81 @@ func GetEncoderClsid(mimeType string) (*windows.GUID, error) {
 	return nil, syscall.ENOENT
 }
 
-func BitmapToPngFile(hBitmap HBITMAP, pngClsId *windows.GUID) ([]byte, error) {
-	bitmap := &gdiplus.GpBitmap{}
-	ret := gdiplus.GdipCreateBitmapFromHBITMAP(
-		gdiplus.HBITMAP(hBitmap),
-		gdiplus.HPALETTE(0),
-		&bitmap,
-	)
-	if ret != gdiplus.Ok {
-		return nil, fmt.Errorf("Bitmap convert error: %s", ret.String())
-	}
-
-	file, err := os.CreateTemp("", "tabswitcher.*.png")
-	if err != nil {
-		return nil, err
-	}
-
-	file.Close()
-	defer os.Remove(file.Name())
-
-	ret = gdiplus.GdipSaveImageToFile(
-		bitmap,
-		windows.StringToUTF16Ptr(file.Name()),
-		(*ole.GUID)(pngClsId),
-		nil,
-	)
-	if ret != gdiplus.Ok {
-		return nil, fmt.Errorf("Save image error: %s", ret.String())
-	}
-
-	iconBytes, err := os.ReadFile(file.Name())
-	if err != nil {
-		return nil, err
-	}
-
-	return iconBytes, nil
-}
-
 func HICONToBase64Png(icon HICON, pngClsId *windows.GUID) (string, error) {
-	iconInfo := ICONINFOEXW{}
-	err := GetIconInfoExW(icon, &iconInfo)
+	// Get icon information
+	var iconInfo ICONINFO
+	err := GetIconInfo(icon, &iconInfo)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("GetIconInfo failed: %w", err)
 	}
 
-	imgBytes, err := BitmapToPngFile(iconInfo.HbmColor, pngClsId)
-	if err != nil {
-		return "", err
-	}
-	DeleteObject(HGDIOBJ(iconInfo.HbmColor))
-
-	maskBytes, err := BitmapToPngFile(iconInfo.HbmMask, pngClsId)
-	if err != nil {
-		return "", err
-	}
+	// Delete mask bitmap as we don't need it
 	DeleteObject(HGDIOBJ(iconInfo.HbmMask))
+	defer DeleteObject(HGDIOBJ(iconInfo.HbmColor))
 
-	img, _, err := image.Decode(bytes.NewReader(imgBytes))
-	if err != nil {
-		return "", err
-	}
-	imgNRGBA := img.(*image.NRGBA)
-
-	mask, _, err := image.Decode(bytes.NewReader(maskBytes))
-	if err != nil {
-		return "", err
-	}
-	maskPalleted := mask.(*image.Paletted)
-
-	for y := 0; y < img.Bounds().Dy(); y++ {
-		for x := 0; x < img.Bounds().Dx(); x++ {
-			a := maskPalleted.ColorIndexAt(x, y)
-			color := imgNRGBA.NRGBAAt(x, y)
-			color.A = 255 - a*255
-
-			imgNRGBA.Set(x, y, color)
-		}
+	// Get bitmap object information
+	var bitmap BITMAP
+	result := GetObjectW(
+		HGDIOBJ(iconInfo.HbmColor),
+		int32(unsafe.Sizeof(bitmap)),
+		unsafe.Pointer(&bitmap),
+	)
+	if result == 0 {
+		return "", fmt.Errorf("GetObjectW failed")
 	}
 
+	width := uint32(bitmap.BmWidth)
+	height := uint32(bitmap.BmHeight)
+	bufSize := int(width) * int(height) * 4
+	buf := make([]byte, bufSize)
+
+	// Get device context
+	dc := GetDC(0)
+	if dc == 0 {
+		return "", fmt.Errorf("GetDC failed")
+	}
+	defer ReleaseDC(0, dc)
+
+	// Setup bitmap info header
+	bitmapInfo := BITMAPINFOHEADER{
+		BiSize:        DWORD(unsafe.Sizeof(BITMAPINFOHEADER{})),
+		BiWidth:       bitmap.BmWidth,
+		BiHeight:      -bitmap.BmHeight, // Negative for top-down DIB
+		BiPlanes:      1,
+		BiBitCount:    32,
+		BiCompression: BI_RGB,
+	}
+
+	// Get DIB bits
+	result = GetDIBits(
+		dc,
+		iconInfo.HbmColor,
+		0,
+		height,
+		unsafe.Pointer(&buf[0]),
+		&bitmapInfo,
+		DIB_RGB_COLORS,
+	)
+	if result == 0 {
+		return "", fmt.Errorf("GetDIBits failed")
+	}
+
+	// Swap B and R channels (BGRA to RGBA)
+	for i := 0; i < len(buf); i += 4 {
+		buf[i], buf[i+2] = buf[i+2], buf[i]
+	}
+
+	// Create RGBA image
+	img := image.NewNRGBA(image.Rect(0, 0, int(width), int(height)))
+	copy(img.Pix, buf)
+
+	// Encode to PNG
 	output := &bytes.Buffer{}
-	err = png.Encode(output, imgNRGBA)
+	err = png.Encode(output, img)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("PNG encode failed: %w", err)
 	}
-	iconB64 := base64.StdEncoding.EncodeToString(output.Bytes())
 
-	return iconB64, nil
+	// Return base64 encoded PNG
+	return base64.StdEncoding.EncodeToString(output.Bytes()), nil
 }
