@@ -47,7 +47,7 @@ function App() {
       </div>
       {windows.map((window) => (
         <div key={window.Hwnd}>
-          <img src={`data:image/png;base64,${window.IconBase64}`} alt="icon" width={50} height={50} />
+          <img src={`data:image/png;base64,${window.IconBase64}`} alt="icon" />
           <div>{window.Hwnd}</div>
           <div>{window.Caption}</div>
         </div>

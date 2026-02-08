@@ -78,6 +78,7 @@ const (
 
 	// Standard icon IDs
 	IDI_APPLICATION = 32512
+	IDI_WINLOGO     = 32517
 
 	WS_OVERLAPPED       = 0x00000000
 	WS_CAPTION          = 0x00C00000
@@ -104,7 +105,7 @@ const (
 	GWL_EXSTYLE = -20
 
 	// GetClassLong indices
-	GCL_HICON = -14
+	GCLP_HICON = -14
 
 	// DWM window attributes
 	DWMWA_CLOAKED = 14
@@ -672,20 +673,17 @@ func GetWindowIcon(hwnd windows.HWND) HICON {
 		0,
 	)
 	if icon != 0 {
-		fmt.Println("WM_GETICON", hwnd)
 		return HICON(icon)
 	}
 
 	// Try getting icon from window class
-	ret, _ := GetClassLongPtrW(hwnd, GCL_HICON)
+	ret, _ := GetClassLongPtrW(hwnd, GCLP_HICON)
 	if ret != 0 {
-		fmt.Println("GetClassLongPtrW", hwnd)
 		return HICON(ret)
 	}
 
 	// Fall back to default application icon
-	fmt.Println("Default", hwnd)
-	return LoadIconW(0, MAKEINTRESOURCEW(IDI_APPLICATION))
+	return LoadIconW(0, MAKEINTRESOURCEW(IDI_WINLOGO))
 }
 
 func GetForegroundWindow() windows.HWND {
