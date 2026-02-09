@@ -40,7 +40,6 @@ func init() {
 	// Register a custom event whose associated data type is string.
 	// This is not required, but the binding generator will pick up registered events
 	// and provide a strongly typed JS/TS API for them.
-	application.RegisterEvent[string]("time")
 	application.RegisterEvent[[]UserWindow]("userWindowsChanged")
 }
 
@@ -161,17 +160,25 @@ func main() {
 	// 'Mac' options tailor the window when running on macOS.
 	// 'BackgroundColour' is the background colour of the window.
 	// 'URL' is the URL that will be loaded into the webview.
-	app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title: "Window 1",
-		Mac: application.MacWindow{
-			InvisibleTitleBarHeight: 50,
-			Backdrop:                application.MacBackdropTranslucent,
-			TitleBar:                application.MacTitleBarHiddenInset,
-		},
-		BackgroundColour: application.NewRGB(27, 38, 54),
+	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
+		BackgroundColour: application.NewRGBA(244, 246, 247, 0),
+		BackgroundType:   application.BackgroundTypeTranslucent,
 		URL:              "/",
+		AlwaysOnTop:      true,
+		Frameless:        false,
+		X:                0,
+		Y:                0,
+		Width:            400,
+		Height:           200,
+		InitialPosition:  application.WindowXY,
+		Windows: application.WindowsWindow{
+			BackdropType:    application.Acrylic,
+			HiddenOnTaskbar: false,
+		},
 	})
 	log.Println("Application set up finished.")
+
+	window.Show()
 
 	ret := gdiplus.GdiplusStartup(&gdipInput, &gdipOutput)
 	fmt.Println(ret.String())

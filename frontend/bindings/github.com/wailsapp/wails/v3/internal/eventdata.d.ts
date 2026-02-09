@@ -12,7 +12,6 @@ import type * as main$0 from "../../../../../changeme/models.js";
 declare module "@wailsio/runtime" {
     namespace Events {
         interface CustomEvents {
-            "time": string;
             "userWindowsChanged": main$0.UserWindow[];
         }
     }
