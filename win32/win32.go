@@ -41,6 +41,7 @@ var (
 	procGetIconInfo          = user32.NewProc("GetIconInfo")
 	procGetIconInfoExW       = user32.NewProc("GetIconInfoExW")
 	procGetForegroundWindow  = user32.NewProc("GetForegroundWindow")
+	procSetForegroundWindow  = user32.NewProc("SetForegroundWindow")
 
 	dwmapi                    = windows.NewLazySystemDLL("dwmapi.dll")
 	procDwmGetWindowAttribute = dwmapi.NewProc("DwmGetWindowAttribute")
@@ -689,6 +690,11 @@ func GetWindowIcon(hwnd windows.HWND) HICON {
 func GetForegroundWindow() windows.HWND {
 	ret, _, _ := procGetForegroundWindow.Call()
 	return windows.HWND(ret)
+}
+
+func SetForegroundWindow(hwnd windows.HWND) bool {
+	ret, _, _ := procSetForegroundWindow.Call(uintptr(hwnd))
+	return ret != 0
 }
 
 // GetEncoderClsid finds the CLSID of an image encoder by MIME type

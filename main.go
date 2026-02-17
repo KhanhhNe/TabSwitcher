@@ -1,13 +1,12 @@
 package main
 
 import (
-	"changeme/win32"
 	"embed"
 	_ "embed"
 	"fmt"
 	"log"
-	"slices"
 	"sync"
+	"tabswitcher/win32"
 	"time"
 	"unsafe"
 
@@ -27,20 +26,21 @@ var assets embed.FS
 type UserWindow struct {
 	touched      bool
 	IsForeground bool
+	LastActive   int
 	Hwnd         windows.HWND
 	Caption      string
 	IconBase64   string
 }
 
 var userWindows sync.Map
-var windowsOrder []windows.HWND
-var windowsOrderMutex sync.Mutex
 
 func init() {
 	// Register a custom event whose associated data type is string.
 	// This is not required, but the binding generator will pick up registered events
 	// and provide a strongly typed JS/TS API for them.
 	application.RegisterEvent[[]UserWindow]("userWindowsChanged")
+	application.RegisterEvent[string]("systemKeyPressed")
+	application.RegisterEvent[windows.HWND]("activateWindow")
 }
 
 var (
@@ -50,8 +50,6 @@ var (
 )
 
 func GetAltTabWindows() []UserWindow {
-	<-time.After(2 * time.Second)
-
 	foreground := win32.GetForegroundWindow()
 
 	userWindows.Range(func(key, val any) bool {
@@ -80,19 +78,22 @@ func GetAltTabWindows() []UserWindow {
 
 				isForeground := foreground == hWnd
 
-				_, existed := userWindows.Load(hWnd)
-				userWindows.Store(hWnd, UserWindow{
-					touched:      true,
-					Hwnd:         hWnd,
-					Caption:      capStr,
-					IconBase64:   iconB64,
-					IsForeground: isForeground,
-				})
-
-				if !existed {
-					windowsOrderMutex.Lock()
-					windowsOrder = append(windowsOrder, hWnd)
-					windowsOrderMutex.Unlock()
+				win, ok := userWindows.Load(hWnd)
+				if ok {
+					window := win.(UserWindow)
+					window.touched = true
+					window.Caption = capStr
+					window.IconBase64 = "data:image/png;base64," + iconB64
+					window.IsForeground = isForeground
+					userWindows.Store(hWnd, window)
+				} else {
+					userWindows.Store(hWnd, UserWindow{
+						touched:      true,
+						Hwnd:         hWnd,
+						Caption:      capStr,
+						IconBase64:   "data:image/png;base64," + iconB64,
+						IsForeground: isForeground,
+					})
 				}
 			}
 			return uintptr(1)
@@ -103,30 +104,16 @@ func GetAltTabWindows() []UserWindow {
 		log.Fatalf("Failed to enumerate windows: %v", err)
 	}
 
-	windowsOrderMutex.Lock()
-	offset := 0
-
-	for i, hwnd := range windowsOrder {
-		i -= offset
-
-		if window, ok := userWindows.Load(hwnd); !ok || !window.(UserWindow).touched {
-			windowsOrder = slices.Delete(windowsOrder, i, i+1)
-			if ok {
-				userWindows.Delete(hwnd)
-			}
-			offset += 1
-		}
-	}
-	windowsOrderMutex.Unlock()
-
 	var userWindowsSlice []UserWindow
-	windowsOrderMutex.Lock()
-	for _, hwnd := range windowsOrder {
-		if window, ok := userWindows.Load(hwnd); ok {
-			userWindowsSlice = append(userWindowsSlice, window.(UserWindow))
+	userWindows.Range(func(key, val any) bool {
+		window := val.(UserWindow)
+		if window.touched {
+			userWindowsSlice = append(userWindowsSlice, window)
+		} else {
+			userWindows.Delete(key)
 		}
-	}
-	windowsOrderMutex.Unlock()
+		return true
+	})
 
 	return userWindowsSlice
 }
@@ -161,24 +148,41 @@ func main() {
 	// 'BackgroundColour' is the background colour of the window.
 	// 'URL' is the URL that will be loaded into the webview.
 	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
-		BackgroundColour: application.NewRGBA(244, 246, 247, 0),
-		BackgroundType:   application.BackgroundTypeTranslucent,
-		URL:              "/",
-		AlwaysOnTop:      true,
-		Frameless:        false,
-		X:                0,
-		Y:                0,
-		Width:            400,
-		Height:           200,
-		InitialPosition:  application.WindowXY,
+		// BackgroundColour: application.NewRGBA(239, 244, 249, 50),
+		BackgroundType:  application.BackgroundTypeTranslucent,
+		URL:             "/",
+		AlwaysOnTop:     true,
+		Frameless:       true,
+		Width:           400,
+		Height:          200,
+		InitialPosition: application.WindowCentered,
 		Windows: application.WindowsWindow{
 			BackdropType:    application.Acrylic,
-			HiddenOnTaskbar: false,
+			HiddenOnTaskbar: true,
 		},
 	})
 	log.Println("Application set up finished.")
 
 	window.Show()
+
+	app.Event.On("activateWindow", func(event *application.CustomEvent) {
+		hwnd := event.Data.(windows.HWND)
+		success := win32.SetForegroundWindow(hwnd)
+		if !success {
+			log.Printf("Failed to set window %v to foreground\n", hwnd)
+			return
+		}
+
+		win, ok := userWindows.Load(hwnd)
+		if ok {
+			window := win.(UserWindow)
+			window.LastActive = int(time.Now().UnixMilli())
+			userWindows.Store(hwnd, window)
+
+			log.Printf("Activated window: %s\n", window.Caption)
+			app.Event.Emit("userWindowsChanged", GetAltTabWindows())
+		}
+	})
 
 	ret := gdiplus.GdiplusStartup(&gdipInput, &gdipOutput)
 	fmt.Println(ret.String())
@@ -206,9 +210,11 @@ func main() {
 				kbdstruct := (*win32.KBDLLHOOKSTRUCT)(unsafe.Pointer(lParam))
 				code := byte(kbdstruct.VkCode)
 				if code == windows.VK_TAB {
+					app.Event.Emit("systemKeyPressed", "tab")
 					fmt.Printf("(tab)")
 				}
 				if code == windows.VK_OEM_3 {
+					app.Event.Emit("systemKeyPressed", "tilde")
 					fmt.Printf("(`~)")
 				}
 				fmt.Printf("%q\n", code)

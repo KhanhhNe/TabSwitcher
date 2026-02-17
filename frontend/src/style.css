@@ -81,6 +81,10 @@
   }
 
   body {
-    @apply bg-background text-foreground;
+    @apply overflow-hidden text-foreground;
+  }
+
+  :root {
+    @apply bg-[initial];
   }
 }

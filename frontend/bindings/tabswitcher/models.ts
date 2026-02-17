@@ -11,6 +11,7 @@ import * as windows$0 from "../golang.org/x/sys/windows/models.js";
 
 export class UserWindow {
     "IsForeground": boolean;
+    "LastActive": number;
     "Hwnd": windows$0.HWND;
     "Caption": string;
     "IconBase64": string;
@@ -19,6 +20,9 @@ export class UserWindow {
     constructor($$source: Partial<UserWindow> = {}) {
         if (!("IsForeground" in $$source)) {
             this["IsForeground"] = false;
+        }
+        if (!("LastActive" in $$source)) {
+            this["LastActive"] = 0;
         }
         if (!("Hwnd" in $$source)) {
             this["Hwnd"] = windows$0.HWND.$zero;

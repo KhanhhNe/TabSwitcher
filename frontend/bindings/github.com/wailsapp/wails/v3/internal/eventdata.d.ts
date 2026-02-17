@@ -7,11 +7,16 @@ import type { Events } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import type * as main$0 from "../../../../../changeme/models.js";
+import type * as windows$0 from "../../../../../golang.org/x/sys/windows/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import type * as main$0 from "../../../../../tabswitcher/models.js";
 
 declare module "@wailsio/runtime" {
     namespace Events {
         interface CustomEvents {
+            "activateWindow": windows$0.HWND;
+            "systemKeyPressed": string;
             "userWindowsChanged": main$0.UserWindow[];
         }
     }

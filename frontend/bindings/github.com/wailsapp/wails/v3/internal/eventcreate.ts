@@ -8,7 +8,10 @@ import { Create as $Create } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as main$0 from "../../../../../changeme/models.js";
+import * as windows$0 from "../../../../../golang.org/x/sys/windows/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as main$0 from "../../../../../tabswitcher/models.js";
 
 function configure() {
     Object.freeze(Object.assign($Create.Events, {
