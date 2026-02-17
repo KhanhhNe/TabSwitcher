@@ -14,34 +14,41 @@ import (
 )
 
 var (
-	user32                   = windows.NewLazySystemDLL("user32.dll")
-	procSetWindowsHookExW    = user32.NewProc("SetWindowsHookExW")
-	procLowLevelKeyboard     = user32.NewProc("LowLevelKeyboardProc")
-	procCallNextHookEx       = user32.NewProc("CallNextHookEx")
-	procUnhookWindowsHookEx  = user32.NewProc("UnhookWindowsHookEx")
-	procGetMessage           = user32.NewProc("GetMessageW")
-	procTranslateMessage     = user32.NewProc("TranslateMessage")
-	procDispatchMessage      = user32.NewProc("DispatchMessageW")
-	procEnumWindows          = user32.NewProc("EnumWindows")
-	procEnumDesktopWindows   = user32.NewProc("EnumDesktopWindows")
-	procGetWindowInfo        = user32.NewProc("GetWindowInfo")
-	procIsWindowVisible      = user32.NewProc("IsWindowVisible")
-	procIsIconic             = user32.NewProc("IsIconic")
-	procGetWindowTextW       = user32.NewProc("GetWindowTextW")
-	procGetShellWindow       = user32.NewProc("GetShellWindow")
-	procGetAncestor          = user32.NewProc("GetAncestor")
-	procGetLastActivePopup   = user32.NewProc("GetLastActivePopup")
-	procGetClassNameW        = user32.NewProc("GetClassNameW")
-	procGetWindowRect        = user32.NewProc("GetWindowRect")
-	procGetWindowLongPtrW    = user32.NewProc("GetWindowLongPtrW")
-	procGetClassLongPtrW     = user32.NewProc("GetClassLongPtrW")
-	procSendMessageW         = user32.NewProc("SendMessageW")
-	procSendMessageCallbackW = user32.NewProc("SendMessageCallbackW")
-	procLoadIconW            = user32.NewProc("LoadIconW")
-	procGetIconInfo          = user32.NewProc("GetIconInfo")
-	procGetIconInfoExW       = user32.NewProc("GetIconInfoExW")
-	procGetForegroundWindow  = user32.NewProc("GetForegroundWindow")
-	procSetForegroundWindow  = user32.NewProc("SetForegroundWindow")
+	user32                       = windows.NewLazySystemDLL("user32.dll")
+	procSetWindowsHookExW        = user32.NewProc("SetWindowsHookExW")
+	procLowLevelKeyboard         = user32.NewProc("LowLevelKeyboardProc")
+	procCallNextHookEx           = user32.NewProc("CallNextHookEx")
+	procUnhookWindowsHookEx      = user32.NewProc("UnhookWindowsHookEx")
+	procGetMessage               = user32.NewProc("GetMessageW")
+	procTranslateMessage         = user32.NewProc("TranslateMessage")
+	procDispatchMessage          = user32.NewProc("DispatchMessageW")
+	procEnumWindows              = user32.NewProc("EnumWindows")
+	procEnumDesktopWindows       = user32.NewProc("EnumDesktopWindows")
+	procGetWindowInfo            = user32.NewProc("GetWindowInfo")
+	procIsWindowVisible          = user32.NewProc("IsWindowVisible")
+	procIsIconic                 = user32.NewProc("IsIconic")
+	procGetWindowTextW           = user32.NewProc("GetWindowTextW")
+	procGetShellWindow           = user32.NewProc("GetShellWindow")
+	procGetAncestor              = user32.NewProc("GetAncestor")
+	procGetLastActivePopup       = user32.NewProc("GetLastActivePopup")
+	procGetClassNameW            = user32.NewProc("GetClassNameW")
+	procGetWindowRect            = user32.NewProc("GetWindowRect")
+	procGetWindowLongPtrW        = user32.NewProc("GetWindowLongPtrW")
+	procGetClassLongPtrW         = user32.NewProc("GetClassLongPtrW")
+	procSendMessageW             = user32.NewProc("SendMessageW")
+	procSendMessageCallbackW     = user32.NewProc("SendMessageCallbackW")
+	procLoadIconW                = user32.NewProc("LoadIconW")
+	procGetIconInfo              = user32.NewProc("GetIconInfo")
+	procGetIconInfoExW           = user32.NewProc("GetIconInfoExW")
+	procGetForegroundWindow      = user32.NewProc("GetForegroundWindow")
+	procSetForegroundWindow      = user32.NewProc("SetForegroundWindow")
+	procGetWindowThreadProcessId = user32.NewProc("GetWindowThreadProcessId")
+
+	shell32            = windows.NewLazySystemDLL("shell32.dll")
+	procExtractIconExW = shell32.NewProc("ExtractIconExW")
+
+	kernel32                       = windows.NewLazySystemDLL("kernel32.dll")
+	procQueryFullProcessImageNameW = kernel32.NewProc("QueryFullProcessImageNameW")
 
 	dwmapi                    = windows.NewLazySystemDLL("dwmapi.dll")
 	procDwmGetWindowAttribute = dwmapi.NewProc("DwmGetWindowAttribute")
@@ -103,10 +110,12 @@ const (
 	GA_ROOTOWNER = 3
 
 	// GetWindowLong indices
-	GWL_EXSTYLE = -20
+	GWL_EXSTYLE    = -20
+	GWLP_HINSTANCE = -6
 
 	// GetClassLong indices
-	GCLP_HICON = -14
+	GCLP_HICON   = -14
+	GCLP_HICONSM = -34
 
 	// DWM window attributes
 	DWMWA_CLOAKED = 14
@@ -127,6 +136,9 @@ const (
 
 	// DIB color table identifiers
 	DIB_RGB_COLORS = 0
+
+	// Process access rights
+	PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
 	NULL = 0
 )
@@ -665,7 +677,12 @@ func IsAltTabWindow(hwnd windows.HWND) bool {
 	return true
 }
 
-func GetWindowIcon(hwnd windows.HWND) HICON {
+type IconInfo struct {
+	Icon   HICON
+	Source string
+}
+
+func GetWindowIcon(hwnd windows.HWND, exePath string) IconInfo {
 	// Try WM_GETICON first
 	icon := SendMessage(
 		hwnd,
@@ -674,17 +691,75 @@ func GetWindowIcon(hwnd windows.HWND) HICON {
 		0,
 	)
 	if icon != 0 {
-		return HICON(icon)
+		return IconInfo{
+			Icon:   HICON(icon),
+			Source: "WM_GETICON",
+		}
+	}
+
+	icon = SendMessage(
+		hwnd,
+		WM_GETICON,
+		ICON_SMALL,
+		0,
+	)
+	if icon != 0 {
+		return IconInfo{
+			Icon:   HICON(icon),
+			Source: "WM_GETICON_S",
+		}
+	}
+
+	icon = SendMessage(
+		hwnd,
+		WM_GETICON,
+		ICON_SMALL2,
+		0,
+	)
+	if icon != 0 {
+		return IconInfo{
+			Icon:   HICON(icon),
+			Source: "WM_GETICON_S2",
+		}
 	}
 
 	// Try getting icon from window class
 	ret, _ := GetClassLongPtrW(hwnd, GCLP_HICON)
 	if ret != 0 {
-		return HICON(ret)
+		return IconInfo{
+			Icon:   HICON(ret),
+			Source: "GCLP_HICON",
+		}
 	}
 
-	// Fall back to default application icon
-	return LoadIconW(0, MAKEINTRESOURCEW(IDI_WINLOGO))
+	ret, _ = GetClassLongPtrW(hwnd, GCLP_HICONSM)
+	if ret != 0 {
+		return IconInfo{
+			Icon:   HICON(ret),
+			Source: "GCLP_HICONSM",
+		}
+	}
+
+	// Try to extract icon from the executable path if provided
+	if exePath != "" {
+		exePathUTF16, err := windows.UTF16PtrFromString(exePath)
+		if err == nil {
+			var largeIcon HICON
+			numIcons := ExtractIconExW(exePathUTF16, 0, &largeIcon, nil, 1)
+			if numIcons > 0 && largeIcon != 0 {
+				return IconInfo{
+					Icon:   largeIcon,
+					Source: "ExtractIconEx",
+				}
+			}
+		}
+	}
+
+	// Fall back to default system icon
+	return IconInfo{
+		Icon:   LoadIconW(0, MAKEINTRESOURCEW(IDI_APPLICATION)),
+		Source: "IDI_APPLICATION",
+	}
 }
 
 func GetForegroundWindow() windows.HWND {
@@ -695,6 +770,38 @@ func GetForegroundWindow() windows.HWND {
 func SetForegroundWindow(hwnd windows.HWND) bool {
 	ret, _, _ := procSetForegroundWindow.Call(uintptr(hwnd))
 	return ret != 0
+}
+
+func GetWindowThreadProcessId(hwnd windows.HWND, lpdwProcessId *DWORD) DWORD {
+	ret, _, _ := procGetWindowThreadProcessId.Call(
+		uintptr(hwnd),
+		uintptr(unsafe.Pointer(lpdwProcessId)),
+	)
+	return DWORD(ret)
+}
+
+func QueryFullProcessImageNameW(hProcess windows.Handle, dwFlags DWORD, lpExeName *uint16, lpdwSize *DWORD) error {
+	ret, _, err := procQueryFullProcessImageNameW.Call(
+		uintptr(hProcess),
+		uintptr(dwFlags),
+		uintptr(unsafe.Pointer(lpExeName)),
+		uintptr(unsafe.Pointer(lpdwSize)),
+	)
+	if ret == 0 {
+		return err
+	}
+	return nil
+}
+
+func ExtractIconExW(lpszFile *uint16, nIconIndex int32, phiconLarge *HICON, phiconSmall *HICON, nIcons uint32) uint32 {
+	ret, _, _ := procExtractIconExW.Call(
+		uintptr(unsafe.Pointer(lpszFile)),
+		uintptr(nIconIndex),
+		uintptr(unsafe.Pointer(phiconLarge)),
+		uintptr(unsafe.Pointer(phiconSmall)),
+		uintptr(nIcons),
+	)
+	return uint32(ret)
 }
 
 // GetEncoderClsid finds the CLSID of an image encoder by MIME type

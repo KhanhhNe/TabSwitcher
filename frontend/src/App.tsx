@@ -76,7 +76,7 @@ function App() {
       }
     });
 
-    Window.OpenDevTools();
+    // Window.OpenDevTools();
 
     const resizeInterval = setInterval(() => {
       Window.SetSize(
@@ -103,12 +103,17 @@ function App() {
         <div
           key={window.Hwnd}
           className={clsx(
-            "cursor-pointer rounded-lg p-2 hover:bg-gray-200",
+            "flex w-[7rem] cursor-pointer flex-col items-center gap-1 rounded-lg p-2 hover:bg-gray-200",
             window.Hwnd === windowsState.selectedWindow && "!bg-gray-100"
           )}
           onClick={() => activateWindow(window.Hwnd)}
         >
           <img src={window.IconBase64} alt="icon" className="size-10 max-w-max" />
+          <span className="text-xs">{window.IconSource}</span>
+          <div className="w-full truncate text-center text-xs">{window.Caption}</div>
+          <div className="w-full truncate text-center text-xs">
+            {window.ExePath.split("\\").pop()}
+          </div>
         </div>
       ))}
     </div>

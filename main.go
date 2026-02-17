@@ -30,6 +30,8 @@ type UserWindow struct {
 	Hwnd         windows.HWND
 	Caption      string
 	IconBase64   string
+	IconSource   string
+	ExePath      string
 }
 
 var userWindows sync.Map
@@ -70,8 +72,23 @@ func GetAltTabWindows() []UserWindow {
 				}
 				capStr := windows.UTF16ToString(caption)
 
-				icon := win32.GetWindowIcon(hWnd)
-				iconB64, err := win32.HICONToBase64Png(icon, pngClsId)
+				// Get the executable path for this window
+				var processId win32.DWORD
+				win32.GetWindowThreadProcessId(hWnd, &processId)
+				exePath := ""
+				hProcess, err := windows.OpenProcess(win32.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(processId))
+				if err == nil {
+					defer windows.CloseHandle(hProcess)
+					var exePathBuf [win32.MAX_PATH]uint16
+					exePathSize := win32.DWORD(win32.MAX_PATH)
+					err = win32.QueryFullProcessImageNameW(hProcess, 0, &exePathBuf[0], &exePathSize)
+					if err == nil {
+						exePath = windows.UTF16ToString(exePathBuf[:])
+					}
+				}
+
+				iconInfo := win32.GetWindowIcon(hWnd, exePath)
+				iconB64, err := win32.HICONToBase64Png(iconInfo.Icon, pngClsId)
 				if err != nil {
 					return uintptr(1)
 				}
@@ -84,7 +101,9 @@ func GetAltTabWindows() []UserWindow {
 					window.touched = true
 					window.Caption = capStr
 					window.IconBase64 = "data:image/png;base64," + iconB64
+					window.IconSource = iconInfo.Source
 					window.IsForeground = isForeground
+					window.ExePath = exePath
 					userWindows.Store(hWnd, window)
 				} else {
 					userWindows.Store(hWnd, UserWindow{
@@ -92,7 +111,9 @@ func GetAltTabWindows() []UserWindow {
 						Hwnd:         hWnd,
 						Caption:      capStr,
 						IconBase64:   "data:image/png;base64," + iconB64,
+						IconSource:   iconInfo.Source,
 						IsForeground: isForeground,
+						ExePath:      exePath,
 					})
 				}
 			}

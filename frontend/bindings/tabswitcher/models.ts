@@ -15,6 +15,8 @@ export class UserWindow {
     "Hwnd": windows$0.HWND;
     "Caption": string;
     "IconBase64": string;
+    "IconSource": string;
+    "ExePath": string;
 
     /** Creates a new UserWindow instance. */
     constructor($$source: Partial<UserWindow> = {}) {
@@ -32,6 +34,12 @@ export class UserWindow {
         }
         if (!("IconBase64" in $$source)) {
             this["IconBase64"] = "";
+        }
+        if (!("IconSource" in $$source)) {
+            this["IconSource"] = "";
+        }
+        if (!("ExePath" in $$source)) {
+            this["ExePath"] = "";
         }
 
         Object.assign(this, $$source);
