@@ -61,68 +61,66 @@ func GetAltTabWindows() []UserWindow {
 		return true
 	})
 
-	err := win32.EnumDesktopWindows(
-		win32.HDESK(0),
-		(win32.WNDENUMPROC)(func(hWnd windows.HWND, lParam win32.LPARAM) uintptr {
-			if win32.IsAltTabWindow(hWnd) {
-				caption := make([]uint16, 256)
-				_, err := win32.GetWindowTextW(hWnd, &caption[0], int32(len(caption)))
-				if err != nil {
-					return uintptr(1)
-				}
-				capStr := windows.UTF16ToString(caption)
+	for res := range win32.ListDesktopWindows() {
+		if res.Error != nil {
+			log.Printf("Error enumerating windows: %v", res.Error)
+			continue
+		}
 
-				// Get the executable path for this window
-				var processId win32.DWORD
-				win32.GetWindowThreadProcessId(hWnd, &processId)
-				exePath := ""
-				hProcess, err := windows.OpenProcess(win32.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(processId))
+		hWnd := res.Window
+		if win32.IsAltTabWindow(hWnd) {
+			caption := make([]uint16, 256)
+			_, err := win32.GetWindowTextW(hWnd, &caption[0], int32(len(caption)))
+			if err != nil {
+				continue
+			}
+			capStr := windows.UTF16ToString(caption)
+
+			// Get the executable path for this window
+			var processId win32.DWORD
+			win32.GetWindowThreadProcessId(hWnd, &processId)
+			exePath := ""
+			hProcess, err := windows.OpenProcess(win32.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(processId))
+			if err == nil {
+				defer windows.CloseHandle(hProcess)
+				var exePathBuf [win32.MAX_PATH]uint16
+				exePathSize := win32.DWORD(win32.MAX_PATH)
+				err = win32.QueryFullProcessImageNameW(hProcess, 0, &exePathBuf[0], &exePathSize)
 				if err == nil {
-					defer windows.CloseHandle(hProcess)
-					var exePathBuf [win32.MAX_PATH]uint16
-					exePathSize := win32.DWORD(win32.MAX_PATH)
-					err = win32.QueryFullProcessImageNameW(hProcess, 0, &exePathBuf[0], &exePathSize)
-					if err == nil {
-						exePath = windows.UTF16ToString(exePathBuf[:])
-					}
-				}
-
-				iconInfo := win32.GetWindowIcon(hWnd, exePath)
-				iconB64, err := win32.HICONToBase64Png(iconInfo.Icon, pngClsId)
-				if err != nil {
-					return uintptr(1)
-				}
-
-				isForeground := foreground == hWnd
-
-				win, ok := userWindows.Load(hWnd)
-				if ok {
-					window := win.(UserWindow)
-					window.touched = true
-					window.Caption = capStr
-					window.IconBase64 = "data:image/png;base64," + iconB64
-					window.IconSource = iconInfo.Source
-					window.IsForeground = isForeground
-					window.ExePath = exePath
-					userWindows.Store(hWnd, window)
-				} else {
-					userWindows.Store(hWnd, UserWindow{
-						touched:      true,
-						Hwnd:         hWnd,
-						Caption:      capStr,
-						IconBase64:   "data:image/png;base64," + iconB64,
-						IconSource:   iconInfo.Source,
-						IsForeground: isForeground,
-						ExePath:      exePath,
-					})
+					exePath = windows.UTF16ToString(exePathBuf[:])
 				}
 			}
-			return uintptr(1)
-		}),
-		win32.LPARAM(0),
-	)
-	if err != nil {
-		log.Fatalf("Failed to enumerate windows: %v", err)
+
+			iconInfo := win32.GetWindowIcon(hWnd, exePath)
+			iconB64, err := win32.HICONToBase64Png(iconInfo.Icon, pngClsId)
+			if err != nil {
+				continue
+			}
+
+			isForeground := foreground == hWnd
+
+			win, ok := userWindows.Load(hWnd)
+			if ok {
+				window := win.(UserWindow)
+				window.touched = true
+				window.Caption = capStr
+				window.IconBase64 = "data:image/png;base64," + iconB64
+				window.IconSource = iconInfo.Source
+				window.IsForeground = isForeground
+				window.ExePath = exePath
+				userWindows.Store(hWnd, window)
+			} else {
+				userWindows.Store(hWnd, UserWindow{
+					touched:      true,
+					Hwnd:         hWnd,
+					Caption:      capStr,
+					IconBase64:   "data:image/png;base64," + iconB64,
+					IconSource:   iconInfo.Source,
+					IsForeground: isForeground,
+					ExePath:      exePath,
+				})
+			}
+		}
 	}
 
 	var userWindowsSlice []UserWindow

@@ -362,6 +362,32 @@ func EnumDesktopWindows(hDesktop HDESK, enumFunc WNDENUMPROC, lParam LPARAM) err
 	return nil
 }
 
+type EnumWindowsResult struct {
+	Window windows.HWND
+	Error  error
+}
+
+func enumDesktopWindowsCallback(hwnd windows.HWND, lParam LPARAM) uintptr {
+	ch := (*chan EnumWindowsResult)(unsafe.Pointer(lParam))
+	*ch <- EnumWindowsResult{Window: hwnd}
+	return 1
+}
+
+func ListDesktopWindows() chan EnumWindowsResult {
+	ch := make(chan EnumWindowsResult)
+	lParam := LPARAM(unsafe.Pointer(&ch))
+
+	go func() {
+		err := EnumDesktopWindows(0, (WNDENUMPROC)(enumDesktopWindowsCallback), lParam)
+		if err != nil {
+			ch <- EnumWindowsResult{Error: err}
+		}
+		close(ch)
+	}()
+
+	return ch
+}
+
 func IswindowVisible(hwnd windows.HWND) bool {
 	ret, _, _ := procIsWindowVisible.Call(
 		uintptr(hwnd),
